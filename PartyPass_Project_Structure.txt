@@ -1,0 +1,198 @@
+
+PartyPass Project: Code Structure and Implementation
+
+Folder Structure:
+------------------
+/PartyPass
+    /app
+        __init__.py         # App initialization
+        /models
+            __init__.py     # Marks models as a package
+            user_model.py   # Database models
+        /routes
+            __init__.py     # Marks routes as a package
+            auth.py         # API routes
+        /services
+            __init__.py     # Marks services as a package
+            qr_service.py   # QR Code logic
+    /tests
+        __init__.py         # Marks tests as a package
+        conftest.py         # Pytest fixtures
+        test_auth.py        # Tests for auth routes
+        test_subscription.py # Tests for subscription
+        test_qr_code.py     # Tests for QR Code management
+        test_analytics.py   # Tests for analytics
+    app.py                  # Main entry point for Flask
+    requirements.txt        # Python dependencies
+    Procfile                # Heroku deployment instructions
+    runtime.txt             # Python version for Heroku
+    venv/                   # Virtual environment
+    qr_codes/               # Folder to store generated QR codes
+
+---
+
+Complete Code:
+--------------
+
+app.py
+-------
+from app import create_app, db
+
+app = create_app()
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()  # Ensure tables are created
+    app.run(debug=True)
+
+app/__init__.py
+---------------
+from flask import Flask
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager
+
+db = SQLAlchemy()
+jwt = JWTManager()
+
+def create_app():
+    app = Flask(__name__)
+
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///party_pass.db'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
+
+    db.init_app(app)
+    jwt.init_app(app)
+
+    from app.routes.auth import auth_bp
+    app.register_blueprint(auth_bp, url_prefix='/auth')
+
+    return app
+
+app/models/user_model.py
+------------------------
+from app import db
+from datetime import datetime
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(150), unique=True, nullable=False)
+    password = db.Column(db.String(150), nullable=False)
+    subscription_plan = db.Column(db.String(50), nullable=True)
+    party_credits = db.Column(db.Integer, default=10)
+
+class QRActivity(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    pub_name = db.Column(db.String(150), nullable=False)
+    scanned_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class Pub(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(150), nullable=False)
+    location = db.Column(db.String(250), nullable=True)
+    qr_code = db.Column(db.String(250), nullable=True)
+
+class SubscriptionHistory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    plan = db.Column(db.String(50), nullable=False)
+    start_date = db.Column(db.DateTime, default=datetime.utcnow)
+    end_date = db.Column(db.DateTime, nullable=True)
+
+app/routes/auth.py
+------------------
+from flask import Blueprint, request, jsonify
+from flask_bcrypt import Bcrypt
+from flask_jwt_extended import create_access_token
+from app.models.user_model import User, QRActivity, Pub, SubscriptionHistory
+from app import db
+from app.services.qr_service import generate_qr_code, validate_qr_code
+
+auth_bp = Blueprint('auth', __name__)
+bcrypt = Bcrypt()
+
+@auth_bp.route('/signup', methods=['POST'])
+def signup():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"message": "User already exists"}), 400
+
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    new_user = User(email=email, password=hashed_password)
+    db.session.add(new_user)
+    db.session.commit()
+
+    return jsonify({"message": "User registered successfully"}), 201
+
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+
+    if not bcrypt.check_password_hash(user.password, password):
+        return jsonify({"message": "Invalid credentials"}), 401
+
+    access_token = create_access_token(identity=user.id)
+    return jsonify({"token": access_token}), 200
+
+app/services/qr_service.py
+--------------------------
+import qrcode
+import os
+
+def generate_qr_code(pub_name):
+    qr_data = f"Pub: {pub_name}"
+    qr_image = qrcode.make(qr_data)
+
+    output_dir = "qr_codes"
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, f"{pub_name}.png")
+    qr_image.save(file_path)
+    return file_path
+
+tests/test_auth.py
+------------------
+def test_signup(client):
+    response = client.post('/auth/signup', json={
+        "email": "test@example.com",
+        "password": "password123"
+    })
+    assert response.status_code == 201
+    assert response.json['message'] == "User registered successfully"
+
+def test_login(client):
+    client.post('/auth/signup', json={
+        "email": "test@example.com",
+        "password": "password123"
+    })
+    response = client.post('/auth/login', json={
+        "email": "test@example.com",
+        "password": "password123"
+    })
+    assert response.status_code == 200
+    assert "token" in response.json
+
+---
+
+Setup and Execution:
+---------------------
+1. Activate virtual environment:
+   venv\Scripts\activate
+
+2. Install dependencies:
+   pip install flask flask_sqlalchemy flask_bcrypt flask_jwt_extended qrcode[pil]
+
+3. Run Flask:
+   python app.py
+
+4. Test with pytest:
+   pytest
